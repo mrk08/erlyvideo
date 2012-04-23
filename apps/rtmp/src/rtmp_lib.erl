@@ -1,11 +1,11 @@
 %%% @author     Max Lapshin <max@maxidoors.ru> [http://erlyvideo.org]
 %%% @copyright  2010 Max Lapshin
-%%% @doc        RTMP encoding/decoding module. 
+%%% @doc        RTMP encoding/decoding module.
 %%% @reference  See <a href="http://erlyvideo.org/rtmp" target="_top">http://erlyvideo.org/rtmp</a> for more information.
 %%% @end
 %%%
 %%% This file is part of erlang-rtmp.
-%%% 
+%%%
 %%% erlang-rtmp is free software: you can redistribute it and/or modify
 %%% it under the terms of the GNU General Public License as published by
 %%% the Free Software Foundation, either version 3 of the License, or
@@ -26,7 +26,7 @@
 
 -include("../include/rtmp.hrl").
 -export([wait_for_reply/2]).
--export([connect/1, connect/2, createStream/1, play/1, play/3, seek/3, pause/3, resume/3, publish/3, publish/4]).
+-export([connect/1, connect/2, connect/3, createStream/1, play/1, play/3, seek/3, pause/3, resume/3, publish/3, publish/4]).
 -export([shared_object_connect/2, shared_object_set/4]).
 -export([play_complete/3, play_failed/2, seek_notify/3, seek_failed/2, play_start/4, pause_notify/2, unpause_notify/3]).
 -export([channel_id/2, empty_audio/2]).
@@ -44,7 +44,7 @@
 
 wait_for_reply(RTMP, InvokeId) when is_integer(InvokeId) ->
   wait_for_reply(RTMP, InvokeId*1.0);
-  
+
 %% @private
 wait_for_reply(RTMP, InvokeId) ->
   receive
@@ -78,7 +78,7 @@ accept_connection(RTMP) -> accept_connection(RTMP, []).
 
 accept_connection(RTMP, Options) ->
   AMFVersion = proplists:get_value(amf_version, Options, 0),
-  
+
   Message = #rtmp_message{channel_id = 2, timestamp = 0, body = <<>>},
   % gen_server:call(self(), {invoke, AMF#rtmp_funcall{command = 'onBWDone', type = invoke, id = 2, stream_id = 0, args = [null]}}),
   rtmp_socket:send(RTMP, Message#rtmp_message{type = window_size, body = ?RTMP_WINDOW_SIZE}),
@@ -114,13 +114,31 @@ fail(RTMP, AMF) -> rtmp_socket:invoke(RTMP, AMF#rtmp_funcall{command = '_error',
 %% @spec (RTMP::rtmp_socket()) -> any()
 %% @doc Send connect request to server with some predefined params
 -spec connect(RTMP::rtmp_socket_pid()) -> ok.
-connect(RTMP) ->
+connect(RTMP) when is_pid(RTMP) ->
+  connect(RTMP, []).
+
+connect(URL, Args) when is_list(URL) orelse is_binary(URL) ->
+  case rtmp_socket:connect(URL) of
+    {ok, RTMP} ->
+      receive
+        {rtmp, RTMP, connected} -> ok
+      after
+        10000 -> erlang:raise({timeout,{rtmp,URL}})
+      end,
+      rtmp_socket:setopts(RTMP, [{active, true}]),
+      ok = connect(RTMP, Args),
+      {ok, RTMP};
+    Else ->
+      Else
+  end;
+
+connect(RTMP, Args) when is_pid(RTMP) ->
   {url, URL} = rtmp_socket:getopts(RTMP, url),
-  connect(RTMP, default_connect_options(URL)).
+  connect(RTMP, default_connect_options(URL), Args).
 
 %% @spec (RTMP::rtmp_socket(), Options::[{Key::atom(), Value::any()}]) -> any()
 %% @doc Send connect request to server
-connect(RTMP, Options) ->
+connect(RTMP, Options, Args) ->
   {url, URL} = rtmp_socket:getopts(RTMP, url),
   ConnectArgs = lists:ukeymerge(1, lists:ukeysort(1, Options), default_connect_options(URL)),
   InvokeId = 1,
@@ -129,13 +147,13 @@ connect(RTMP, Options) ->
     type = invoke,
     id = InvokeId,
     stream_id = 0,
-    args = [{object, ConnectArgs}]
+    args = [{object, ConnectArgs} | Args]
   },
   % io:format("~p -> ~p~n", [{connect, Options}, ConnectArgs]),
   rtmp_socket:invoke(RTMP, AMF),
   wait_for_reply(RTMP, InvokeId),
   ok.
-  
+
 createStream(RTMP) ->
   InvokeId = 1,
   AMF = #rtmp_funcall{
@@ -151,18 +169,8 @@ createStream(RTMP) ->
 
 
 play(URL) when is_list(URL) orelse is_binary(URL) ->
-  case rtmp_socket:connect(URL) of
-    {ok, RTMP} ->
-      receive
-        {rtmp, RTMP, connected} -> ok
-      after
-        10000 -> erlang:raise({timeout,{rtmp,URL}})
-      end,
-      invoke_rtmp_play(RTMP, URL);
-    Else ->
-      Else
-  end.
-  
+  play(URL, [], []).
+
 app_path(URL) ->
   {_, FullPath} = http_uri2:extract_path_with_query(URL),
   case re:run(FullPath, "/(.*)//(.*)", [{capture,all_but_first,list}]) of
@@ -173,31 +181,40 @@ app_path(URL) ->
       Path1 = string:join(PathParts, "/"),
       {App1, Path1}
   end.
-  
 
-invoke_rtmp_play(RTMP, URL) ->
-  rtmp_socket:setopts(RTMP, [{active, true}]),
-  connect(RTMP),
+
+% invoke_rtmp_play(RTMP, URL) ->
+%   rtmp_socket:setopts(RTMP, [{active, true}]),
+%   connect(RTMP),
+
+%   {ok, RTMP}.
+
+play(URL, CArgs, PArgs) when is_list(URL) orelse is_binary(URL) ->
+  {ok, RTMP} = connect(URL, CArgs),
   {_App, Path} = app_path(URL),
   ?D({"Connected to RTMP source", URL, _App, Path}),
   Stream = rtmp_lib:createStream(RTMP),
   ?D({"Stream",Stream}),
-  play(RTMP, Stream, Path),
+  play(RTMP, Stream, Path, PArgs),
   ?D({"Playing", Path}),
-  
-  {ok, RTMP}.
-
+  {ok, RTMP};
 
 play(RTMP, Stream, Path) when is_list(Path) ->
-  play(RTMP, Stream, list_to_binary(Path));
-  
+  play(RTMP, Stream, list_to_binary(Path), []);
+
 play(RTMP, Stream, Path) ->
+  play(RTMP, Stream, Path, []).
+
+play(RTMP, Stream, Path, PArgs) when is_list(Path) ->
+  play(RTMP, Stream, list_to_binary(Path), PArgs);
+
+play(RTMP, Stream, Path, _PArgs) ->
   AMF = #rtmp_funcall{
     command = play,
     type = invoke,
     id = 2,
     stream_id = Stream,
-    args = [null, Path]
+    args = [null, Path | _PArgs]
   },
   rtmp_socket:invoke(RTMP, AMF),
   receive
@@ -215,11 +232,11 @@ call(RTMP, Stream, Name, Args) ->
   },
   rtmp_socket:invoke(RTMP, AMF),
   ok.
-  
+
 
 pause(RTMP, Stream, DTS) ->
   call(RTMP, Stream, pause, [true, DTS]).
-  
+
 
 resume(RTMP, Stream, DTS) ->
   call(RTMP, Stream, pause, [false, DTS]).
@@ -265,7 +282,7 @@ shared_object_connect(RTMP, Name) ->
   after
     30000 -> erlang:error(timeout)
   end.
-  
+
 shared_object_set(RTMP, Name, Key, Value) ->
   rtmp_socket:send(RTMP, #rtmp_message{type=shared_object, body=#so_message{name = Name, events=[{set_attribute, {Key, Value}}]}}),
   receive
@@ -273,7 +290,7 @@ shared_object_set(RTMP, Name, Key, Value) ->
   after
     30000 -> erlang:error(timeout)
   end.
-  
+
 
 -spec play_start(RTMP::pid(), StreamId::non_neg_integer(), DTS::timestamp_type(), Type::live|file) -> ok.
 play_start(RTMP, StreamId, DTS, Type) ->
@@ -281,7 +298,7 @@ play_start(RTMP, StreamId, DTS, Type) ->
   % rtmp_socket:send(RTMP, #rtmp_message{type = abort, body = channel_id(video, StreamId), timestamp = DTS}),
   case Type of
     resume -> ok;
-    _ -> 
+    _ ->
       Reset = rtmp_socket:prepare_status(StreamId, <<"NetStream.Play.Reset">>),
       rtmp_socket:send(RTMP, Reset#rtmp_message{timestamp = DTS, channel_id = channel_id(metadata, StreamId)})
   end,
@@ -291,21 +308,21 @@ play_start(RTMP, StreamId, DTS, Type) ->
     _ -> rtmp_socket:send(RTMP, #rtmp_message{type = stream_recorded, stream_id = StreamId, timestamp = DTS, ts_type = new})
   end,
   rtmp_socket:send(RTMP, #rtmp_message{type = stream_begin, stream_id = StreamId, timestamp = DTS, ts_type = new}),
-  
-  
+
+
   PlayStart = rtmp_socket:prepare_status(StreamId, <<"NetStream.Play.Start">>),
   rtmp_socket:send(RTMP, PlayStart#rtmp_message{timestamp = DTS, channel_id = channel_id(metadata, StreamId)}),
 
   rtmp_socket:send(RTMP, #rtmp_message{type = metadata, channel_id = channel_id(metadata, StreamId), stream_id = StreamId,
     body = [<<"|RtmpSampleAccess">>, true, true], timestamp = DTS, ts_type = delta}),
-    
+
   % rtmp_socket:send(RTMP, #rtmp_message{type = audio, body = <<>>, timestamp = DTS, channel_id = channel_id(audio, StreamId), stream_id = StreamId}),
-    
+
   Notify = rtmp_socket:prepare_notify(StreamId, <<"onStatus">>, [{code, <<"NetStream.Data.Start">>}]),
   rtmp_socket:send(RTMP, Notify#rtmp_message{channel_id = channel_id(metadata, StreamId), timestamp = DTS}),
-  
+
   ok.
-  
+
 
 pause_notify(RTMP, StreamId) ->
   % rtmp_socket:send(RTMP, #rtmp_message{type = stream_maybe_seek, stream_id = StreamId}),
@@ -318,8 +335,8 @@ unpause_notify(RTMP, StreamId, DTS) ->
   rtmp_socket:send(RTMP, Status#rtmp_message{channel_id = rtmp_lib:channel_id(metadata, StreamId), ts_type = delta, timestamp = 0}),
   play_start(RTMP, StreamId, DTS, resume),
   ok.
-  
-  
+
+
 
 seek_notify(RTMP, StreamId, DTS) ->
   rtmp_socket:send(RTMP, #rtmp_message{type = stream_end, stream_id = StreamId, ts_type = new}),
@@ -328,17 +345,17 @@ seek_notify(RTMP, StreamId, DTS) ->
 
   SeekStatus = rtmp_socket:prepare_status(StreamId, <<"NetStream.Seek.Notify">>),
   rtmp_socket:send(RTMP, SeekStatus#rtmp_message{timestamp = DTS, channel_id = channel_id(metadata, StreamId), ts_type = new}),
-  
+
   PlayStartStatus = rtmp_socket:prepare_status(StreamId, <<"NetStream.Play.Start">>),
   rtmp_socket:send(RTMP, PlayStartStatus#rtmp_message{timestamp = DTS, channel_id = channel_id(metadata, StreamId), ts_type = delta}),
-  
+
   rtmp_socket:send(RTMP, #rtmp_message{type = metadata, channel_id = channel_id(metadata, StreamId), stream_id = StreamId,
     body = [<<"|RtmpSampleAccess">>, true, true], timestamp = DTS, ts_type = delta}),
 
-  
+
   % rtmp_socket:send(RTMP, #rtmp_message{type = metadata, channel_id = channel_id(audio, StreamId), stream_id = StreamId,
   %   timestamp = same, body = [<<"|RtmpSampleAccess">>, true, true]}),
-    
+
   % DataNotify = rtmp_socket:prepare_notify(StreamId, ),
   rtmp_socket:send(RTMP, #rtmp_message{type = metadata, timestamp = DTS, channel_id = channel_id(metadata, StreamId), ts_type = new,
                                        body = [<<"onStatus">>, {object, [{code, <<"NetStream.Data.Start">>}]}]}),
@@ -347,7 +364,7 @@ seek_notify(RTMP, StreamId, DTS) ->
 seek_failed(RTMP, StreamId) ->
   rtmp_socket:status(RTMP, StreamId, <<"NetStream.Seek.InvalidTime">>),
   ok.
-  
+
 
 play_complete(RTMP, StreamId, Options) ->
 
@@ -362,25 +379,25 @@ play_complete(RTMP, StreamId, Options) ->
   rtmp_socket:send(RTMP, #rtmp_message{type = stream_end, stream_id = StreamId, channel_id = 2, timestamp = 0, ts_type = new}),
 
   PlayComplete1Arg = {object, [{level, <<"status">>}, {code, <<"NetStream.Play.Complete">>}, {duration, Duration/1000},{bytes,0}]},
-  PlayComplete1 = #rtmp_message{type = metadata, channel_id = channel_id(metadata, StreamId), stream_id = StreamId, 
+  PlayComplete1 = #rtmp_message{type = metadata, channel_id = channel_id(metadata, StreamId), stream_id = StreamId,
                 body = [<<"onPlayStatus">>, PlayComplete1Arg], timestamp = Duration, ts_type = new},
   rtmp_socket:send(RTMP, PlayComplete1),
 
 
 
   % PlayCompleteArg = {object, [{level, <<"status">>}, {code, <<"NetStream.Play.Complete">>}, {duration, Duration/1000},{bytes,0}]},
-  % PlayComplete = #rtmp_message{type = metadata, channel_id = channel_id(metadata, StreamId), stream_id = StreamId, 
+  % PlayComplete = #rtmp_message{type = metadata, channel_id = channel_id(metadata, StreamId), stream_id = StreamId,
   %               body = [<<"onMetaData">>, PlayCompleteArg], timestamp = same},
   % rtmp_socket:send(RTMP, PlayComplete),
-  
 
-  
+
+
   rtmp_socket:send(RTMP, #rtmp_message{type = stream_end, stream_id = StreamId, channel_id = 2, timestamp = 0, ts_type = new}),
 
-  
+
 
   PlayStopArg = {object, [{level, <<"status">>}, {code, <<"NetStream.Play.Stop">>},{description,<<"file end">>}]},
-  PlayStop = #rtmp_message{type = invoke, channel_id = channel_id(metadata, StreamId), timestamp = Duration, ts_type = new, stream_id = StreamId, 
+  PlayStop = #rtmp_message{type = invoke, channel_id = channel_id(metadata, StreamId), timestamp = Duration, ts_type = new, stream_id = StreamId,
                 body = #rtmp_funcall{command = onStatus, id = 0, stream_id = StreamId, args = [null, PlayStopArg]}},
   rtmp_socket:send(RTMP, PlayStop),
   % rtmp_socket:status(RTMP, StreamId, <<"NetStream.Play.Stop">>).
@@ -389,14 +406,14 @@ play_complete(RTMP, StreamId, Options) ->
 
 play_failed(RTMP, StreamId) ->
   PlayComplete1Arg = {object, [{level, <<"status">>}, {code, <<"NetStream.Play.Failed">>}]},
-  PlayComplete1 = #rtmp_message{type = metadata, channel_id = channel_id(video, StreamId), stream_id = StreamId, 
+  PlayComplete1 = #rtmp_message{type = metadata, channel_id = channel_id(video, StreamId), stream_id = StreamId,
                 body = [<<"onPlayStatus">>, PlayComplete1Arg], timestamp = same},
   rtmp_socket:send(RTMP, PlayComplete1),
 
 
 
   PlayCompleteArg = {object, [{level, <<"status">>}, {code, <<"NetStream.Play.Failed">>}]},
-  PlayComplete = #rtmp_message{type = metadata, channel_id = channel_id(video, StreamId), stream_id = StreamId, 
+  PlayComplete = #rtmp_message{type = metadata, channel_id = channel_id(video, StreamId), stream_id = StreamId,
                 body = [<<"onMetaData">>, PlayCompleteArg], timestamp = same},
   rtmp_socket:send(RTMP, PlayComplete),
 
@@ -404,12 +421,12 @@ play_failed(RTMP, StreamId) ->
   rtmp_socket:send(RTMP, #rtmp_message{type = stream_end, stream_id = StreamId, channel_id = 2, timestamp = 0}),
 
   PlayStopArg = {object, [{level, <<"status">>}, {code, <<"NetStream.Play.Failed">>},{description,"file end"}]},
-  PlayStop = #rtmp_message{type = invoke, channel_id = channel_id(video, StreamId), timestamp = 0, stream_id = StreamId, 
+  PlayStop = #rtmp_message{type = invoke, channel_id = channel_id(video, StreamId), timestamp = 0, stream_id = StreamId,
                 body = #rtmp_funcall{command = onStatus, id = 0, stream_id = StreamId, args = [null, PlayStopArg]}},
   rtmp_socket:send(RTMP, PlayStop),
   % rtmp_socket:status(RTMP, StreamId, <<"NetStream.Play.Stop">>).
   ok.
-  
+
 
 -spec channel_id(Content::content_type(), StreamId::non_neg_integer()) -> non_neg_integer().
 channel_id(metadata, StreamId) -> 4 + StreamId;
@@ -423,8 +440,8 @@ notify_publish_start(RTMP, StreamId, SessionId, Name) when is_list(Name) ->
 notify_publish_start(RTMP, StreamId, SessionId, Name) ->
   rtmp_socket:send(RTMP, #rtmp_message{type = stream_begin, stream_id = StreamId}),
   Arg = {object, [
-    {level, <<"status">>}, 
-    {code, <<"NetStream.Publish.Start">>}, 
+    {level, <<"status">>},
+    {code, <<"NetStream.Publish.Start">>},
     {description, <<"Publishing ", Name/binary, ".">>},
     {clientid, SessionId}
   ]},
@@ -439,5 +456,5 @@ notify_publish_start(RTMP, StreamId, SessionId, Name) ->
 %   after
 %     10000 -> erlang:error(timeout)
 %   end.
-% 
-%     
+%
+%
