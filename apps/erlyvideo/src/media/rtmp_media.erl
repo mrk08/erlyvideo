@@ -5,7 +5,7 @@
 %%% @end
 %%%
 %%% This file is part of erlyvideo.
-%%% 
+%%%
 %%% erlyvideo is free software: you can redistribute it and/or modify
 %%% it under the terms of the GNU General Public License as published by
 %%% the Free Software Foundation, either version 3 of the License, or
@@ -75,8 +75,11 @@ handle_control(no_clients, State) ->
 handle_control(timeout, State) ->
   {stop, normal, State};
 
-handle_control({make_request, URL}, _Media) ->
-  rtmp_lib:play(URL);
+handle_control({make_request, URL}, #ems_media{options = Opts}=_Media) ->
+  %% detector returning {type, rtmp} can now pass extra arguments to rtmp_media
+  CArgs = proplists:get_value(connect_extra, Opts, []),
+  PArgs = proplists:get_value(play_extra, Opts, []),
+  rtmp_lib:play(URL, CArgs, PArgs);
 
 handle_control(_Control, State) ->
   {noreply, State}.
@@ -100,7 +103,7 @@ handle_frame(Frame, State) ->
 %% @doc Called by ems_media to parse incoming message.
 %% @end
 %%----------------------------------------------------------------------
-  
+
 
 handle_info({rtmp, _RTMP, #rtmp_message{type = Type, timestamp = Timestamp, body = Body}}, Recorder) when (Type == audio orelse Type == video) andalso size(Body) > 0 ->
   Frame = flv_video_frame:decode(#video_frame{dts = Timestamp, pts = Timestamp, content = Type}, Body),
@@ -118,7 +121,7 @@ handle_info({rtmp, _RTMP, #rtmp_message{type = metadata, timestamp = Timestamp, 
   self() ! Frame,
   {noreply, Recorder};
 
-handle_info({rtmp, _RTMP, #rtmp_message{type = Type}}, State) when Type == ping orelse Type == pong 
+handle_info({rtmp, _RTMP, #rtmp_message{type = Type}}, State) when Type == ping orelse Type == pong
   orelse Type == burst_start orelse Type == burst_stop ->
   % Ignore ping/pong messages
   {noreply, State};
@@ -133,18 +136,18 @@ handle_info({rtmp, RTMP, #rtmp_message{type = invoke, body = #rtmp_funcall{comma
   case proplists:get_value(code, Command) of
     <<"NetStream.Play.StreamNotFound">> ->
       ?D({stream_not_found}),
-       
+
       % Клиенты, которые сейчас ожидают первого фрейма получат not_found.
       % Этого должно хватить, что бы отрисовать RTMP 404
-      lists:map(fun({Pid,_Ref})-> 
+      lists:map(fun({Pid,_Ref})->
         Pid ! {ems_stream,StreamId,not_found}
       end,State#ems_media.waiting_for_config),
-        
+
       % Эта строчка нужна, потому что клиент, который только-только стартовал наш поток
       % ждет ответа ems_media:media_info (это блокирующий вызов) и нам надо его разблокировать
-      % пустой медиа инфо  
+      % пустой медиа инфо
       State1 = ems_media:set_media_info(State, #media_info{audio = [], video = []}),
-      
+
       % посылаем себе асинхронно stop, что бы наши клиенты не отвалились с error normal
       self() ! stop,
       {noreply, State1};
@@ -158,13 +161,13 @@ handle_info({rtmp, RTMP, #rtmp_message{type = invoke, body = #rtmp_funcall{comma
       % Play.Stop означает нормальное завершение удаленного стрима
       ?D({remote_stream_stoped, Command}),
       {stop, normal, State};
-      
+
     <<"NetStream.Play.Failed">> ->
       ?D({play_failed}),
       % Play.Failed означает, что стрим сдох, а следовательно нам имеет смысл попробовать рестартнуться
       rtmp_socket:close(RTMP),
       {noreply, State};
-      
+
      _Else ->
        ?D({unknown_status, _Else}),
        {noreply, State}
