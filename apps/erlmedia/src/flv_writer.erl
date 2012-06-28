@@ -251,7 +251,7 @@ flush_messages(#flv_file_writer{buffer = Buf1} = FlvWriter, How) ->
 %% @doc  Writes one flv frame
 %% @end
 %%-------------------------------------------------------------------------
-dump_frame_in_file(#video_frame{dts = DTS} = Frame, #flv_file_writer{base_dts = undefined} = FlvWriter) ->
+dump_frame_in_file(#video_frame{dts = _DTS} = Frame, #flv_file_writer{base_dts = undefined} = FlvWriter) ->
   put(last_dts, 0),
   dump_frame_in_file(Frame, FlvWriter#flv_file_writer{base_dts = 0});
 
