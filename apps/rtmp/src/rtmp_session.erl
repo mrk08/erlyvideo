@@ -170,6 +170,8 @@ handle_call({socket_ready, RTMP}, _From, State) ->
 handle_call({get_field, Field}, _From, State) ->
   {reply, get(State, Field), State};
 
+handle_call({set_field, K, V}, _From, State) ->
+  {reply, ok, set(State, K, V)};
 
 handle_call(accept_connection, _From, Session) ->
   {reply, ok, accept_connection(Session)};

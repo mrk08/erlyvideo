@@ -98,10 +98,10 @@ accept_connection(RTMP, Options) ->
 
 reject_connection(RTMP) ->
   ConnectObj = [{fmsVer, <<"FMS/", ?FMS_VERSION>>}, {capabilities, 31}, {mode, 1}],
-  StatusObj = [{level, <<"status">>},
+  StatusObj = [{level, <<"error">>},
                {code, <<"NetConnection.Connect.Rejected">>},
                {description, <<"Connection rejected.">>}],
-  reply(RTMP, #rtmp_funcall{id = 1, args = [{object, ConnectObj}, {object, StatusObj}]}),
+  fail(RTMP, #rtmp_funcall{id = 1, args = [{object, ConnectObj}, {object, StatusObj}]}),
   ok.
 
 
